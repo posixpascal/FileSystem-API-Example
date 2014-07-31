@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>FileSystem API Example</title>
+        <script src="https://code.jquery.com/jquery-git1.min.js"></script>
+        <script>
+            // https://code.google.com/p/chromium/issues/detail?id=94314
+            var FileDownloader = function(){
+                var root = this;
+
+                this.totalFiles = 2;
+                this.currentFile = 0;
+                this.currentFileSize = 0;
+                this.currentChunkNumber = 0;
+                this.currentFileMimeType = "";
+                this.fs = null;
+
+                var requestFileSystem = window.requestFileSystem || window.webkitRequestFileSystem;
+
+                requestFileSystem(window.TEMPORARY, 5 * 1024 * 1024, function(fs){
+                   root.fs = fs;
+                }, this.errorHandler);
+
+
+
+
+
+                // from: http://codereview.stackexchange.com/questions/37512/count-byte-length-of-string
+                // *****************
+                this.getByteLength = function(normal_val) {
+                    // Force string type
+                    normal_val = String(normal_val);
+
+                    var byteLen = 0;
+                    for (var i = 0; i < normal_val.length; i++) {
+                        var c = normal_val.charCodeAt(i);
+                        byteLen += c < (1 <<  7) ? 1 :
+                                   c < (1 << 11) ? 2 :
+                                   c < (1 << 16) ? 3 :
+                                   c < (1 << 21) ? 4 :
+                                   c < (1 << 26) ? 5 :
+                                   c < (1 << 31) ? 6 : Number.NaN;
+                    }
+                    return byteLen;
+                };
+                // *****************
+
+                this.errorHandler = function(err){
+                    console.log(err);
+                };
+
+                this.writeFile = function(fileName, blob, cb){
+                    var root = this;
+                    window.fs = root.fs;
+
+                        root.fs.root.getFile(fileName, {create: true, exclusive: false}, function(fileEntry){
+                            window.fileEntry = fileEntry;
+                            fileEntry.createWriter(function(fileWriter){
+                                fileWriter.onwriteend = function(){
+                                    fileEntry.getMetadata(function(data){
+                                        root.currentFileSize = data.size;
+
+                                        cb();
+                                    }, root.errorHandler);
+
+                                }
+
+                                fileWriter.onerror = function(err){
+                                    root.errorHandler(err);
+                                };
+                                fileWriter.seek(fileWriter.length);
+                                fileWriter.write(blob);
+                            }, root.errorHandler)
+                        }, root.errorHandler);
+                };
+
+                this.writeChunk = function(err, chunk){
+                    if (err){ return root.errorHandler(err);}
+
+                    var blob = new Blob(new Uint8Array(chunk), {type: root.currentFileMimeType});
+
+
+                    root.writeFile(root.currentFileName, blob, function(){
+
+                        root.currentFileSize += root.getByteLength(chunk);
+                        blob = null;
+                        if (root.currentFileSize < root.currentFileTotalSize){
+                            console.log(root.currentFileSize);
+                            root.getFileChunk(root.currentFile, root.currentChunkNumber, root.writeChunk);
+                        } else {
+                            root.download(root.currentFileName);
+                        }
+                    });
+
+                }
+
+                this.download = function(fileName){
+                    var path =this.fs.root.toURL() + fileName;
+                    var $link = $('<a></a>').attr('href', path).attr('download', fileName);
+                    $link[0].click();
+
+
+                   root.currentFile += 1;
+                   root.currentChunkNumber = 0;
+                   root.currentFileSize = 0;
+                   root.currentFileTotalSize = 0;
+                   root.currentFileMimeType = null;
+                   if (root.currentFile < root.totalFiles){
+                        root.downloadFiles(); // get the next one here.
+                   }
+                };
+
+                this.downloadFiles = function(){
+                    this.getFileData(this.currentFile, function(err, fileSize, fileName, mimeType){
+                       var root = this;
+                       root.currentFileMimeType = mimeType;
+                       root.currentFileName = fileName;
+                       root.currentFileTotalSize = fileSize;
+                       this.getFileChunk(this.currentFile,this.currentChunkNumber, root.writeChunk);
+                    });
+                };
+                this.getFileData = function(id, cb, errorHandler){
+                    this.doRequest('/download.php', {
+                       'requestFile': id,
+                       'requestType': 'metadata'
+                    }, function(err, data){
+                        if (err) { return errorHandler(err);}
+                        (cb.bind(this))(err, data.fileSize, data.fileName, data.mimeType);
+                    });
+                };
+
+                this.getFileChunk = function(id, chunkPosition, cb){
+                    this.doRequest('/download.php', {
+                        'requestFile': id,
+                        'requestType': 'content',
+                        'chunkPosition': chunkPosition
+                    }, function(err, data){
+                        (cb.bind(this))(err, data);
+                    }, true);
+                };
+
+                this.getNextFileChunk = function(id, chunkPosition, cb){
+
+                }
+
+
+                this.doRequest = function(url, data, cb, binary){
+                    var root = this;
+                    binary = binary || false;
+                    $.ajax({
+                        url: url,
+                        data: data,
+                        type: "POST",
+                        responseType: "blob",
+                        success: function(data){
+                            if (!binary){
+                                data = $.parseJSON(data);
+
+                                if (data.error) {
+                                    return cb(data.error);
+                                }
+                            }
+                            return (cb.bind(root))(null, data);
+                        }
+                    });
+                };
+
+                return this;
+            };
+
+            $(function(){
+               var Downloader = new FileDownloader();
+               $('.link-download').on('click', Downloader.downloadFiles.bind(Downloader));
+
+
+
+
+            });
+        </script>
+    </head>
+    <body>
+        <a href="#" class="link link-download">Download all files</a>
+    </body>
+</html>
